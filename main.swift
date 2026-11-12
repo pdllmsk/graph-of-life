@@ -8,11 +8,8 @@ let defaultIntervalMinutes = 15
 let intervalRange = 1...240
 
 let defaultPhrases = """
-Что сейчас самое важное?
-Ты делаешь то, что собирался?
-Выпрями спину и сделай глубокий вдох.
-Выпей воды.
-Чему ты научился за последний час?
+Какую задачу я решаю?
+Что происходит?
 """
 
 // MARK: - Оформление
@@ -1024,6 +1021,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, SPUUpdaterDelegate, SP
         pauseItem = menu.addItem(withTitle: "Пауза", action: #selector(togglePause), keyEquivalent: "")
         loginItem = menu.addItem(withTitle: "Запускать при входе", action: #selector(toggleLogin), keyEquivalent: "")
         menu.addItem(.separator())
+        menu.addItem(withTitle: "О приложении", action: #selector(openAbout), keyEquivalent: "")
         let checkItem = menu.addItem(withTitle: "Проверить обновления…",
                                      action: #selector(SPUStandardUpdaterController.checkForUpdates(_:)), keyEquivalent: "")
         checkItem.target = updater
@@ -1255,6 +1253,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, SPUUpdaterDelegate, SP
         guard !bubble.restyle(look) else { return }
         let sample = lastShown ?? loadPhrases().first ?? "Так будет выглядеть фраза"
         bubble.show(.phrase(sample), look: look, animated: false)
+    }
+
+    /// Короткая сводка: что это за приложение и зачем оно.
+    @objc private func openAbout() {
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
+        let alert = NSAlert()
+        alert.messageText = "График жизни"
+        alert.informativeText = """
+        Помогает замечать, как на самом деле проходит день.
+
+        Раз в несколько минут поверх всех окон появляется фраза или вопрос из вашего списка, чтобы вернуть внимание к важному.
+
+        Иногда приложение просит оценить состояние звёздами от 1 до 10 и коротко написать почему. Из оценок складывается график: видно, когда вам хорошо, когда плохо и что на это влияет.
+
+        Всё хранится только на этом Mac. Обновления приходят сами.
+
+        Версия \(version)
+        """
+        if let icon = Bundle.main.image(forResource: "AppIcon") { alert.icon = icon }
+        alert.addButton(withTitle: "Понятно")
+        NSApp.activate(ignoringOtherApps: true)
+        alert.runModal()
     }
 
     @objc private func openSettings() {
