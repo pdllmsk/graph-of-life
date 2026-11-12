@@ -1,9 +1,11 @@
 #!/bin/zsh
-# Рисует AppIcon.icns: красный квадрат со скруглением и чёрная черта, по сетке значков macOS.
-#   ./make-icon.sh [цвет фона, hex]
+# Рисует значок по сетке macOS: квадрат со скруглением и чёрная черта.
+#   ./make-icon.sh                     — AppIcon.icns, значок приложения (красный)
+#   ./make-icon.sh FFFFFF MenuIcon     — MenuIcon.icns, значок в строке меню (белый)
 set -euo pipefail
 cd "$(dirname "$0")"
 BG=${1:-EE0000}
+NAME=${2:-AppIcon}
 TMP=$(mktemp -d)
 cat > "$TMP/icon.swift" <<'SWIFT'
 import AppKit
@@ -39,6 +41,6 @@ for sz in 16 32 128 256 512; do
   sips -z $sz $sz "$TMP/1024.png" --out "$TMP/AppIcon.iconset/icon_${sz}x${sz}.png" >/dev/null
   sips -z $((sz*2)) $((sz*2)) "$TMP/1024.png" --out "$TMP/AppIcon.iconset/icon_${sz}x${sz}@2x.png" >/dev/null
 done
-iconutil -c icns "$TMP/AppIcon.iconset" -o AppIcon.icns
+iconutil -c icns "$TMP/AppIcon.iconset" -o "$NAME.icns"
 rm -rf "$TMP"
-echo "Готово: AppIcon.icns, фон #$BG"
+echo "Готово: $NAME.icns, фон #$BG"

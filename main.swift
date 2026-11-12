@@ -1004,9 +1004,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, SPUUpdaterDelegate, SP
     func applicationDidFinishLaunching(_ note: Notification) {
         updater = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: self, userDriverDelegate: self)
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        // Значка в доке нет, поэтому показываем здесь. Берём файл напрямую:
-        // значок приложения система перекрашивает под стиль значков macOS.
-        let icon = Bundle.main.image(forResource: "AppIcon") ?? (NSApp.applicationIconImage.copy() as! NSImage)
+        // В строке меню свой значок: белый с чёрной чертой. Берём файл напрямую,
+        // иначе система перекрасит его под стиль значков macOS.
+        let icon = Bundle.main.image(forResource: "MenuIcon") ?? (NSApp.applicationIconImage.copy() as! NSImage)
         icon.size = NSSize(width: 22, height: 22)
         statusItem.button?.image = icon
         statusItem.button?.setAccessibilityLabel("График жизни")

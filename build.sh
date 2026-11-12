@@ -34,7 +34,7 @@ done
 lipo -create build/Nudge-arm64 build/Nudge-x86_64 -output "$APP/Contents/MacOS/Nudge"
 rm -rf build
 ditto "$SPARKLE_DIR/Sparkle.framework" "$APP/Contents/Frameworks/Sparkle.framework"
-cp AppIcon.icns "$APP/Contents/Resources/"
+cp AppIcon.icns MenuIcon.icns "$APP/Contents/Resources/"
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
