@@ -1,3 +1,7 @@
+![Фраза поверх всех окон](https://raw.githubusercontent.com/pdllmsk/graph-of-life/main/docs/screenshots/phrase.png)
+
+![Статистика](https://raw.githubusercontent.com/pdllmsk/graph-of-life/main/docs/screenshots/stats.png)
+
 **Как установить**
 
 1. Скачайте [GraphOfLife.dmg](https://github.com/pdllmsk/graph-of-life/releases/latest/download/GraphOfLife.dmg) и откройте его.
