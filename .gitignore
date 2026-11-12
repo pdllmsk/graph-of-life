@@ -1,0 +1,5 @@
+*.app
+vendor/
+dist/
+build/
+.DS_Store
