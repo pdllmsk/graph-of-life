@@ -17,7 +17,9 @@ git tag "v$V"
 git push -q origin HEAD "v$V"
 
 gh release create "v$V" "dist/GraphOfLife-$V.zip" dist/GraphOfLife.dmg dist/appcast.xml --repo "$REPO" \
-  --title "График жизни $V" --notes "${NOTES:+$NOTES
+  --title "График жизни $V" --notes "${NOTES:+**Что нового:** $NOTES
+
+---
 
 }$(cat INSTALL.md)"
 echo "Выпущено: https://github.com/$REPO/releases/tag/v$V"
