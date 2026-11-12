@@ -420,7 +420,8 @@ final class Bubble: NSObject, NSTextFieldDelegate {
     private let tintView = NSView()
     private let label = NSTextField(wrappingLabelWithString: "")
     private let stars = StarRating()
-    private let skip = FirstMouseButton(title: "Пропустить", target: nil, action: nil)
+    private let skip = FirstMouseButton()
+    private var skipTop: NSLayoutConstraint!, skipTrailing: NSLayoutConstraint!
     private let commentField = NSTextField()
     private let mic = FirstMouseButton()
     private lazy var commentRow = NSStackView(views: [commentField, mic])
@@ -442,9 +443,13 @@ final class Bubble: NSObject, NSTextFieldDelegate {
         tintView.translatesAutoresizingMaskIntoConstraints = false
         label.alignment = .center
 
+        // Крестик закрытия в правом верхнем углу, как у обычных окон.
+        skip.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: "Пропустить")
         skip.isBordered = false
-        skip.font = .systemFont(ofSize: 12)
-        skip.contentTintColor = .secondaryLabelColor
+        skip.contentTintColor = .tertiaryLabelColor
+        skip.toolTip = "Пропустить"
+        skip.symbolConfiguration = .init(pointSize: 12, weight: .semibold)
+        skip.translatesAutoresizingMaskIntoConstraints = false
         skip.target = self
         skip.action = #selector(hide)
         stars.onPick = { [weak self] in self?.picked($0) }
@@ -467,10 +472,13 @@ final class Bubble: NSObject, NSTextFieldDelegate {
         stack.alignment = .centerX
         stack.spacing = 14
         stack.translatesAutoresizingMaskIntoConstraints = false
-        [label, stars, commentRow, skip].forEach(stack.addArrangedSubview)
+        [label, stars, commentRow].forEach(stack.addArrangedSubview)
 
         effect.addSubview(tintView)
         effect.addSubview(stack)
+        effect.addSubview(skip)
+        skipTop = skip.topAnchor.constraint(equalTo: effect.topAnchor)
+        skipTrailing = skip.trailingAnchor.constraint(equalTo: effect.trailingAnchor)
         NSLayoutConstraint.activate([
             tintView.leadingAnchor.constraint(equalTo: effect.leadingAnchor),
             tintView.trailingAnchor.constraint(equalTo: effect.trailingAnchor),
@@ -480,6 +488,7 @@ final class Bubble: NSObject, NSTextFieldDelegate {
             stack.trailingAnchor.constraint(equalTo: effect.trailingAnchor, constant: -padH),
             stack.topAnchor.constraint(equalTo: effect.topAnchor, constant: padV),
             stack.bottomAnchor.constraint(equalTo: effect.bottomAnchor, constant: -padV),
+            skipTop, skipTrailing,
         ])
         click = NSClickGestureRecognizer(target: self, action: #selector(hide))
         effect.addGestureRecognizer(click)
@@ -647,6 +656,9 @@ final class Bubble: NSObject, NSTextFieldDelegate {
         tintView.layer?.backgroundColor = look.tint?.cgColor
         let r = CGFloat(look.cornerRadius)
         tintView.layer?.cornerRadius = r
+        let inset = max(10, r * 0.4)                   // чем круглее угол, тем дальше крестик от края
+        skipTop.constant = inset
+        skipTrailing.constant = -inset
         effect.maskImage = Bubble.mask(radius: r)
         effect.layoutSubtreeIfNeeded()
         let size = effect.fittingSize
