@@ -16,7 +16,7 @@ if ! git diff --quiet VERSION; then git commit -q -m "Версия $V" VERSION; 
 git tag "v$V"
 git push -q origin HEAD "v$V"
 
-gh release create "v$V" "dist/GraphOfLife-$V.zip" dist/appcast.xml --repo "$REPO" \
+gh release create "v$V" "dist/GraphOfLife-$V.zip" dist/GraphOfLife.dmg dist/appcast.xml --repo "$REPO" \
   --title "График жизни $V" --notes "${NOTES:+$NOTES
 
 }$(cat INSTALL.md)"

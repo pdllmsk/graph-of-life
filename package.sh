@@ -31,4 +31,13 @@ cat > dist/appcast.xml <<XML
   </channel>
 </rss>
 XML
-echo "Готово: dist/$ZIP и dist/appcast.xml"
+
+# Образ диска для первой установки: приложение и ярлык «Программы», куда его перетащить.
+# Ссылка .../releases/latest/download/GraphOfLife.dmg всегда ведёт на последнюю версию.
+STAGE=$(mktemp -d)
+ditto "График жизни.app" "$STAGE/График жизни.app"
+ln -s /Applications "$STAGE/Программы"
+rm -f dist/GraphOfLife.dmg
+hdiutil create -quiet -volname "График жизни" -srcfolder "$STAGE" -fs HFS+ -format UDZO dist/GraphOfLife.dmg
+rm -rf "$STAGE"
+echo "Готово: dist/$ZIP, dist/GraphOfLife.dmg и dist/appcast.xml"

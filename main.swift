@@ -1056,13 +1056,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, SPUUpdaterDelegate, SP
     /// У приложения без значка в доке Sparkle показывает напоминания об обновлениях деликатно.
     var supportsGentleScheduledUpdateReminders: Bool { true }
 
-    /// Запущенное прямо из «Загрузок» приложение macOS держит во временной копии, и обновиться оно не сможет.
+    /// Приложение, запущенное прямо из «Загрузок» или из открытого образа диска, обновиться не сможет:
+    /// macOS держит его во временной копии или на диске только для чтения.
     private func warnIfTranslocated() {
-        guard Bundle.main.bundlePath.contains("/AppTranslocation/") else { return }
+        let path = Bundle.main.bundlePath
+        guard path.contains("/AppTranslocation/") || path.hasPrefix("/Volumes/") else { return }
         NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
         alert.messageText = "Перенесите «График жизни» в «Программы»"
-        alert.informativeText = "Сейчас приложение открыто прямо из загрузок, и macOS не даст ему обновляться. Закройте его, перетащите в папку «Программы» и откройте оттуда."
+        alert.informativeText = "Сейчас приложение открыто не из папки «Программы», и macOS не даст ему обновляться. Закройте его, перетащите в «Программы» и откройте оттуда."
         alert.runModal()
     }
 

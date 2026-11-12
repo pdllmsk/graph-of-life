@@ -2,7 +2,7 @@
 
 Приложение для macOS в строке меню. Раз в несколько минут поверх всех окон показывает фразу или вопрос из вашего списка, а время от времени просит оценить состояние по пяти звёздам с половинками. Оценки и комментарии собираются в график.
 
-Установка для пользователей описана в [INSTALL.md](INSTALL.md), свежая версия лежит в [релизах](https://github.com/pdllmsk/graph-of-life/releases/latest).
+Скачать: [GraphOfLife.dmg](https://github.com/pdllmsk/graph-of-life/releases/latest/download/GraphOfLife.dmg). Установка описана в [INSTALL.md](INSTALL.md).
 
 ## Разработка
 
