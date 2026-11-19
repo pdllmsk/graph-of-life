@@ -24,13 +24,11 @@ struct Look {
     var cornerRadius: Double = 18
     var maxWidth: Double = 640
     var position = 0                 // 0 сверху, 1 по центру, 2 снизу
-    var seconds = 60                 // сколько держать на экране
 
     static let fontRange = 12.0...64.0
     static let cornerRange = 0.0...40.0
     static let widthRange = 280.0...1200.0
-    static let secondsRange = 3...600
-    private static let key = "look"
+    static let key = "look"
 
     static func load() -> Look {
         var l = Look()
@@ -43,14 +41,13 @@ struct Look {
         if let v = d["cornerRadius"] as? Double { l.cornerRadius = v.clamped(cornerRange) }
         if let v = d["maxWidth"] as? Double { l.maxWidth = v.clamped(widthRange) }
         if let v = d["position"] as? Int, (0...2).contains(v) { l.position = v }
-        if let v = d["seconds"] as? Int { l.seconds = v.clamped(secondsRange) }
         return l
     }
 
     func save() {
         var d: [String: Any] = ["fontSize": fontSize, "bold": bold, "theme": theme,
                                 "cornerRadius": cornerRadius, "maxWidth": maxWidth,
-                                "position": position, "seconds": seconds]
+                                "position": position]
         if let c = textColor, let data = Look.data(c) { d["textColor"] = data }
         if let c = tint, let data = Look.data(c) { d["tint"] = data }
         UserDefaults.standard.set(d, forKey: Look.key)
@@ -80,26 +77,204 @@ extension Comparable {
 
 /// Настройки вопроса «оцени состояние».
 struct RatingSettings {
-    var enabled = true
     var every = 4                                  // каждый N-й показ вместо фразы
     var prompt = "Оцени своё состояние"
 
     static let everyRange = 1...20
     static let defaultPrompt = "Оцени своё состояние"
-    private static let key = "rating"
+    static let key = "rating"
 
     static func load() -> RatingSettings {
         var r = RatingSettings()
         guard let d = UserDefaults.standard.dictionary(forKey: key) else { return r }
-        if let v = d["enabled"] as? Bool { r.enabled = v }
         if let v = d["every"] as? Int { r.every = v.clamped(everyRange) }
         if let v = d["prompt"] as? String { r.prompt = v }
         return r
     }
 
     func save() {
-        UserDefaults.standard.set(["enabled": enabled, "every": every, "prompt": prompt],
+        UserDefaults.standard.set(["every": every, "prompt": prompt],
                                   forKey: RatingSettings.key)
+    }
+}
+
+// MARK: - Режимы бытия
+
+/// Набор фраз со своим ритмом показа: «Занятие», «Продажа». Обычный режим работает,
+/// когда не включён никакой другой. Стиль плашки общий, он на вкладке «Показ».
+struct BeingMode: Codable {
+    var id: String                       // имя файла фраз, не меняется при переименовании
+    var name: String
+    var ordered = false                  // по списку по кругу, иначе вразнобой
+    var intervalMinutes = defaultIntervalMinutes
+    var seconds = 60                     // сколько держать на экране
+    var askRating = true
+
+    static let defaultID = "default"
+    static let secondsRange = 3...600
+    var isDefault: Bool { id == BeingMode.defaultID }
+
+    var title: String {
+        let t = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return t.isEmpty ? "Без названия" : t
+    }
+
+    /// Значения из настроек могли поправить руками: держим их в допустимых пределах.
+    func clamped() -> BeingMode {
+        var m = self
+        m.intervalMinutes = intervalMinutes.clamped(intervalRange)
+        m.seconds = seconds.clamped(BeingMode.secondsRange)
+        return m
+    }
+}
+
+/// Какой режим включён и до какого времени. until == nil — пока не выключат.
+struct ActiveMode: Codable {
+    var id: String
+    var until: Date?
+}
+
+/// Сколько может длиться режим: пункты подменю, в минутах. nil — пока не выключат.
+let modeDurations: [(title: String, minutes: Int?)] = [
+    ("15 мин", 15), ("30 мин", 30), ("1 ч", 60), ("1,5 ч", 90), ("2 ч", 120), ("3 ч", 180),
+    ("Пока не выключу", nil),
+]
+
+let sampleModePhrases = """
+Кто сейчас молчит?
+Задай вопрос группе
+Проверь время
+Говори медленнее
+Что они должны унести с собой?
+"""
+
+/// Список режимов и включённый режим. Настройки в defaults, фразы — в текстовых файлах:
+/// у обычного режима это прежний phrases.txt, у остальных modes/<id>.txt.
+final class ModeStore {
+    private(set) var modes: [BeingMode] = []
+    private(set) var active: ActiveMode?
+    private let dir: URL
+    private static let modesKey = "modes", activeKey = "activeMode"
+
+    init(dir: URL) {
+        self.dir = dir
+        try? FileManager.default.createDirectory(at: dir.appendingPathComponent("modes"),
+                                                 withIntermediateDirectories: true)
+        let base = url(BeingMode.defaultID)
+        if !FileManager.default.fileExists(atPath: base.path) {
+            try? defaultPhrases.write(to: base, atomically: true, encoding: .utf8)
+        }
+        let d = UserDefaults.standard
+        if let data = d.data(forKey: ModeStore.modesKey),
+           let list = try? JSONDecoder().decode([BeingMode].self, from: data) {
+            modes = list.map { $0.clamped() }
+        } else {
+            modes = ModeStore.firstLaunch()
+            if !FileManager.default.fileExists(atPath: url(modes[1].id).path) {
+                try? sampleModePhrases.write(to: url(modes[1].id), atomically: true, encoding: .utf8)
+            }
+            save()
+        }
+        if !modes.contains(where: \.isDefault) {
+            modes.insert(BeingMode(id: BeingMode.defaultID, name: "Обычный"), at: 0)
+            save()
+        }
+        if let data = d.data(forKey: ModeStore.activeKey),
+           let a = try? JSONDecoder().decode(ActiveMode.self, from: data) {
+            active = a
+        }
+        dropExpired()
+    }
+
+    /// До режимов интервал, время на экране и галочка оценки были общими.
+    /// Теперь это настройки обычного режима. Рядом кладём образец «Занятие».
+    private static func firstLaunch() -> [BeingMode] {
+        let d = UserDefaults.standard
+        var base = BeingMode(id: BeingMode.defaultID, name: "Обычный")
+        let interval = d.integer(forKey: "intervalMinutes")
+        if interval != 0 { base.intervalMinutes = interval }
+        if let s = d.dictionary(forKey: Look.key)?["seconds"] as? Int { base.seconds = s }
+        if let r = d.dictionary(forKey: RatingSettings.key)?["enabled"] as? Bool { base.askRating = r }
+        let lesson = BeingMode(id: UUID().uuidString, name: "Занятие", ordered: false,
+                               intervalMinutes: 10, seconds: 20, askRating: false)
+        return [base.clamped(), lesson]
+    }
+
+    var current: BeingMode {
+        active.flatMap { a in modes.first { $0.id == a.id } } ?? modes[0]
+    }
+
+    func mode(_ id: String) -> BeingMode? { modes.first { $0.id == id } }
+
+    func update(_ id: String, _ change: (inout BeingMode) -> Void) {
+        guard let i = modes.firstIndex(where: { $0.id == id }) else { return }
+        change(&modes[i])
+        modes[i] = modes[i].clamped()
+        save()
+    }
+
+    /// Новый режим берёт ритм показа у обычного.
+    func add() -> BeingMode {
+        var m = modes[0]
+        m.id = UUID().uuidString
+        m.name = "Новый режим"
+        modes.append(m)
+        save()
+        return m
+    }
+
+    /// Обычный режим удалить нельзя. Фразы удаляются вместе с режимом.
+    func remove(_ id: String) {
+        guard id != BeingMode.defaultID else { return }
+        modes.removeAll { $0.id == id }
+        try? FileManager.default.removeItem(at: url(id))
+        if active?.id == id { setActive(nil) }
+        save()
+    }
+
+    func setActive(_ a: ActiveMode?) {
+        active = a?.id == BeingMode.defaultID ? nil : a
+        if let a = active, let data = try? JSONEncoder().encode(a) {
+            UserDefaults.standard.set(data, forKey: ModeStore.activeKey)
+        } else {
+            UserDefaults.standard.removeObject(forKey: ModeStore.activeKey)
+        }
+    }
+
+    /// Время режима вышло или сам режим удалили. true — режим выключился.
+    @discardableResult
+    func dropExpired(now: Date = Date()) -> Bool {
+        guard let a = active else { return false }
+        guard mode(a.id) == nil || (a.until.map { $0 <= now } ?? false) else { return false }
+        setActive(nil)
+        return true
+    }
+
+    // MARK: Фразы
+
+    func url(_ id: String) -> URL {
+        id == BeingMode.defaultID ? dir.appendingPathComponent("phrases.txt")
+                                  : dir.appendingPathComponent("modes/\(id).txt")
+    }
+
+    func phrasesText(_ id: String) -> String {
+        (try? String(contentsOf: url(id), encoding: .utf8)) ?? ""
+    }
+
+    func savePhrases(_ text: String, _ id: String) throws {
+        try text.write(to: url(id), atomically: true, encoding: .utf8)
+    }
+
+    func phrases(_ id: String) -> [String] {
+        phrasesText(id).split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty && !$0.hasPrefix("#") }
+    }
+
+    private func save() {
+        if let data = try? JSONEncoder().encode(modes) {
+            UserDefaults.standard.set(data, forKey: ModeStore.modesKey)
+        }
     }
 }
 
@@ -190,16 +365,38 @@ struct RatingEntry: Identifiable {
     let date: Date
     let points: Int
     let comment: String?
+    let mode: String
 }
 
 /// Читает журнал оценок. Сам журнал по-прежнему CSV, окно только рисует его.
 final class StatsModel: ObservableObject {
     @Published private(set) var entries: [RatingEntry] = []
     private let url: URL
+    private let defaultMode: () -> String          // режим старых оценок, записанных до режимов
 
-    init(url: URL) {
+    init(url: URL, defaultMode: @escaping () -> String) {
         self.url = url
+        self.defaultMode = defaultMode
         reload()
+    }
+
+    /// Строка CSV на поля: в кавычках могут быть запятые и удвоенные кавычки.
+    static func fields(_ line: Substring) -> [String] {
+        var out: [String] = [], cur = "", quoted = false, prev: Character?
+        for ch in line {
+            if ch == "\"" {
+                if !quoted, prev == "\"" { cur.append(ch) }    // "" внутри кавычек — одна кавычка
+                quoted.toggle()
+            } else if ch == ",", !quoted {
+                out.append(cur)
+                cur = ""
+            } else {
+                cur.append(ch)
+            }
+            prev = ch
+        }
+        out.append(cur)
+        return out
     }
 
     func reload() {
@@ -207,19 +404,15 @@ final class StatsModel: ObservableObject {
         f.locale = Locale(identifier: "en_US_POSIX")
         f.dateFormat = "yyyy-MM-dd HH:mm"
         let text = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+        let base = defaultMode()
         entries = text.split(whereSeparator: \.isNewline).compactMap { line in
-            // дата,оценка[,"комментарий"] — в комментарии могут быть запятые
-            let parts = line.split(separator: ",", maxSplits: 2, omittingEmptySubsequences: false)
-            guard parts.count >= 2, let date = f.date(from: String(parts[0])),
+            // дата,оценка[,"комментарий"[,"режим"]]
+            let parts = StatsModel.fields(line)
+            guard parts.count >= 2, let date = f.date(from: parts[0]),
                   let p = Int(parts[1].trimmingCharacters(in: .whitespaces)), (1...10).contains(p) else { return nil }
-            var comment: String?
-            if parts.count == 3 {
-                var c = String(parts[2])
-                if c.count >= 2, c.hasPrefix("\""), c.hasSuffix("\"") { c = String(c.dropFirst().dropLast()) }
-                c = c.replacingOccurrences(of: "\"\"", with: "\"")
-                comment = c.isEmpty ? nil : c
-            }
-            return RatingEntry(date: date, points: p, comment: comment)
+            let comment = parts.count > 2 && !parts[2].isEmpty ? parts[2] : nil
+            let mode = parts.count > 3 && !parts[3].isEmpty ? parts[3] : base
+            return RatingEntry(date: date, points: p, comment: comment, mode: mode)
         }.sorted { $0.date < $1.date }
     }
 }
@@ -245,6 +438,7 @@ struct StatPoint: Identifiable {
     let value: Double
     let count: Int
     let comments: [String]
+    let modes: [String]
     var id: Date { date }
 }
 
@@ -272,12 +466,13 @@ struct StatsView: View {
     private var points: [StatPoint] {
         if !isDaily {
             return filtered.map { StatPoint(date: $0.date, value: Double($0.points), count: 1,
-                                            comments: $0.comment.map { [$0] } ?? []) }
+                                            comments: $0.comment.map { [$0] } ?? [], modes: [$0.mode]) }
         }
         let byDay = Dictionary(grouping: filtered) { Calendar.current.startOfDay(for: $0.date) }
         return byDay.map { day, items in
             StatPoint(date: day, value: Double(items.map(\.points).reduce(0, +)) / Double(items.count),
-                      count: items.count, comments: items.compactMap(\.comment))
+                      count: items.count, comments: items.compactMap(\.comment),
+                      modes: items.map(\.mode).reduce(into: []) { if !$0.contains($1) { $0.append($1) } })
         }.sorted { $0.date < $1.date }
     }
 
@@ -375,6 +570,7 @@ struct StatsView: View {
             if isDaily {
                 Text("среднее из \(p.count)").font(.caption).foregroundStyle(.secondary)
             }
+            Text(p.modes.joined(separator: ", ")).font(.caption).foregroundStyle(.secondary).lineLimit(1)
             ForEach(Array(p.comments.suffix(3).enumerated()), id: \.offset) { _, c in
                 Text("«\(c)»").font(.caption).lineLimit(2)
             }
@@ -429,6 +625,7 @@ final class Bubble: NSObject, NSTextFieldDelegate {
     private var hideWork: DispatchWorkItem?
     private(set) var isVisible = false
     private var look = Look()
+    private var seconds = 60                           // сколько держать текущий показ
     private let padH: CGFloat = 32, padV: CGFloat = 22
 
     override init() {
@@ -502,6 +699,7 @@ final class Bubble: NSObject, NSTextFieldDelegate {
         p.isOpaque = false
         p.backgroundColor = .clear
         p.hasShadow = true
+        p.sharingType = .none                         // не попадать в трансляцию и запись экрана
         p.level = .screenSaver                        // выше обычных и полноэкранных окон
         p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         p.isReleasedWhenClosed = false
@@ -512,7 +710,8 @@ final class Bubble: NSObject, NSTextFieldDelegate {
     }
 
     /// Показывает фразу или вопрос с оценкой. Если окно уже на экране, заменяет содержимое.
-    func show(_ content: BubbleContent, look: Look, animated: Bool) {
+    func show(_ content: BubbleContent, look: Look, seconds: Int, animated: Bool) {
+        self.seconds = seconds
         flush()
         switch content {
         case .phrase(let text):
@@ -523,13 +722,13 @@ final class Bubble: NSObject, NSTextFieldDelegate {
             stars.value = 0
             setMode(.rating)
         }
-        present(look: look, animated: animated, hideAfter: TimeInterval(look.seconds))
+        present(look: look, animated: animated, hideAfter: TimeInterval(seconds))
     }
 
     /// Перерисовать то, что сейчас на экране, в новом оформлении. false — показывать нечего.
     func restyle(_ look: Look) -> Bool {
         guard isVisible else { return false }
-        present(look: look, animated: false, hideAfter: TimeInterval(look.seconds))
+        present(look: look, animated: false, hideAfter: TimeInterval(seconds))
         return true
     }
 
@@ -696,16 +895,23 @@ final class Action: NSObject {
     @objc func fire() { run() }
 }
 
-final class SettingsWindow: NSObject, NSWindowDelegate, NSTextViewDelegate {
+final class SettingsWindow: NSObject, NSWindowDelegate, NSTextViewDelegate, NSTextFieldDelegate,
+                            NSTableViewDataSource, NSTableViewDelegate {
     private unowned let app: AppDelegate
     let window: NSWindow
     private let text: NSTextView
     private var actions: [Action] = []
     private var syncs: [() -> Void] = []     // выставить контролы по текущим настройкам
+    private let modeList = NSTableView()
+    private let nameField = NSTextField()
+    private let removeButton = NSButton()
+    private let startButton = NSPopUpButton(frame: .zero, pullsDown: true)
+    private var selectedID = BeingMode.defaultID
+    private var selected: BeingMode { app.modes.mode(selectedID) ?? app.modes.modes[0] }
 
     init(app: AppDelegate) {
         self.app = app
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 580, height: 540),
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 720, height: 560),
                           styleMask: [.titled, .closable, .resizable, .miniaturizable],
                           backing: .buffered, defer: false)
         let scroll = NSTextView.scrollableTextView()
@@ -713,12 +919,38 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTextViewDelegate {
         super.init()
 
         window.title = "График жизни"
-        window.minSize = NSSize(width: 520, height: 480)
+        window.minSize = NSSize(width: 660, height: 500)
         window.isReleasedWhenClosed = false
         window.delegate = self
         NSColorPanel.shared.showsAlpha = true
 
-        // Вкладка «Фразы»
+        // Вкладка «Режимы»: слева список, справа выбранный режим.
+        let column = NSTableColumn(identifier: .init("name"))
+        modeList.addTableColumn(column)
+        modeList.headerView = nil
+        modeList.rowHeight = 24
+        modeList.allowsEmptySelection = false
+        modeList.dataSource = self
+        modeList.delegate = self
+        let listScroll = NSScrollView()
+        listScroll.documentView = modeList
+        listScroll.hasVerticalScroller = true
+        listScroll.borderType = .bezelBorder
+        let addButton = NSButton(image: NSImage(named: NSImage.addTemplateName)!, target: nil, action: nil)
+        addButton.toolTip = "Новый режим"
+        bind(addButton) { [unowned self] in self.addMode() }
+        removeButton.image = NSImage(named: NSImage.removeTemplateName)
+        removeButton.toolTip = "Удалить режим"
+        bind(removeButton) { [unowned self] in self.confirmRemove() }
+        for b in [addButton, removeButton] {
+            b.bezelStyle = .smallSquare
+            b.widthAnchor.constraint(equalToConstant: 26).isActive = true
+        }
+        let listButtons = row([addButton, removeButton])
+        listButtons.spacing = 0
+
+        nameField.delegate = self
+        nameField.placeholderString = "Название режима"
         let hint = NSTextField(labelWithString: "Одна фраза на строку. Изменения сохраняются сами.")
         hint.font = .systemFont(ofSize: 12)
         hint.textColor = .secondaryLabelColor
@@ -729,22 +961,69 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTextViewDelegate {
         text.allowsUndo = true
         text.isAutomaticQuoteSubstitutionEnabled = false
         text.delegate = self
-        let phrasesView = NSView()
-        pin([hint, scroll], in: phrasesView)
 
-        // Вкладка «Показ»
+        startButton.addItem(withTitle: "Включить")
+        startButton.addItems(withTitles: modeDurations.map(\.title))
+        bind(startButton) { [unowned self] in
+            let i = self.startButton.indexOfSelectedItem - 1
+            guard modeDurations.indices.contains(i) else { return }
+            self.app.startMode(self.selectedID, minutes: modeDurations[i].minutes)
+        }
+        let modeGrid = NSGridView(views: [
+            [label("Порядок"), popup(["Вразнобой", "По списку по кругу"],
+                get: { [unowned self] in self.selected.ordered ? 1 : 0 },
+                set: { [unowned self] v in self.app.updateMode(self.selectedID) { $0.ordered = v == 1 } })],
+            [label("Показывать каждые"), numberRow(intervalRange, unit: "мин",
+                get: { [unowned self] in self.selected.intervalMinutes },
+                set: { [unowned self] v in self.app.updateMode(self.selectedID) { $0.intervalMinutes = v } })],
+            [label("Держать на экране"), numberRow(BeingMode.secondsRange, unit: "сек",
+                get: { [unowned self] in self.selected.seconds },
+                set: { [unowned self] v in self.app.updateMode(self.selectedID) { $0.seconds = v } })],
+            [NSGridCell.emptyContentView, checkbox("Спрашивать оценку состояния",
+                get: { [unowned self] in self.selected.askRating },
+                set: { [unowned self] v in self.app.updateMode(self.selectedID) { $0.askRating = v } })],
+            [NSGridCell.emptyContentView, startButton],
+        ])
+        modeGrid.column(at: 0).xPlacement = .trailing
+        modeGrid.rowAlignment = .none
+        modeGrid.yPlacement = .center
+        modeGrid.rowSpacing = 8
+        modeGrid.columnSpacing = 10
+
+        let modesView = NSView()
+        for v in [listScroll, listButtons, nameField, hint, scroll, modeGrid] as [NSView] {
+            v.translatesAutoresizingMaskIntoConstraints = false
+            modesView.addSubview(v)
+        }
+        NSLayoutConstraint.activate([
+            listScroll.topAnchor.constraint(equalTo: modesView.topAnchor, constant: 12),
+            listScroll.leadingAnchor.constraint(equalTo: modesView.leadingAnchor, constant: 16),
+            listScroll.widthAnchor.constraint(equalToConstant: 180),
+            listButtons.topAnchor.constraint(equalTo: listScroll.bottomAnchor, constant: -1),
+            listButtons.leadingAnchor.constraint(equalTo: listScroll.leadingAnchor),
+            listButtons.bottomAnchor.constraint(equalTo: modesView.bottomAnchor, constant: -14),
+
+            nameField.topAnchor.constraint(equalTo: listScroll.topAnchor),
+            nameField.leadingAnchor.constraint(equalTo: listScroll.trailingAnchor, constant: 16),
+            nameField.trailingAnchor.constraint(equalTo: modesView.trailingAnchor, constant: -16),
+            hint.topAnchor.constraint(equalTo: nameField.bottomAnchor, constant: 10),
+            hint.leadingAnchor.constraint(equalTo: nameField.leadingAnchor),
+            scroll.topAnchor.constraint(equalTo: hint.bottomAnchor, constant: 6),
+            scroll.leadingAnchor.constraint(equalTo: nameField.leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: nameField.trailingAnchor),
+            scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 120),
+            modeGrid.topAnchor.constraint(equalTo: scroll.bottomAnchor, constant: 12),
+            modeGrid.leadingAnchor.constraint(equalTo: nameField.leadingAnchor),
+            modeGrid.bottomAnchor.constraint(equalTo: listButtons.bottomAnchor),
+        ])
+
+        // Вкладка «Показ»: стиль плашки, общий для всех режимов.
         let reset = NSButton(title: "Сбросить оформление", target: nil, action: nil)
         bind(reset) { [unowned self] in
             self.app.updateLook { $0 = Look() }
             self.syncs.forEach { $0() }
         }
         let grid = NSGridView(views: [
-            [label("Показывать каждые"), numberRow(intervalRange, unit: "мин",
-                get: { [unowned self] in self.app.intervalMinutes },
-                set: { [unowned self] in self.app.applyInterval($0) })],
-            [label("Держать на экране"), numberRow(Look.secondsRange, unit: "сек",
-                get: { [unowned self] in self.app.look.seconds },
-                set: { [unowned self] v in self.app.updateLook { $0.seconds = v } })],
             [label("Положение"), popup(["Сверху", "По центру", "Снизу"],
                 get: { [unowned self] in self.app.look.position },
                 set: { [unowned self] v in self.app.updateLook { $0.position = v } })],
@@ -797,14 +1076,11 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTextViewDelegate {
         let openLog = NSButton(title: "Статистика", target: nil, action: nil)
         bind(openLog) { [unowned self] in self.app.openStats() }
         let ratingHint = NSTextField(wrappingLabelWithString:
-            "Вместо фразы появится вопрос и пять звёзд. Левая половина звезды — нечётный балл, правая — чётный, всего до 10. Ответы видны на графике в окне «Статистика».")
+            "Вместо фразы появится вопрос и пять звёзд. Левая половина звезды — нечётный балл, правая — чётный, всего до 10. Спрашивать ли оценку, задаётся в каждом режиме. Ответы видны на графике в окне «Статистика».")
         ratingHint.font = .systemFont(ofSize: 12)
         ratingHint.textColor = .secondaryLabelColor
         ratingHint.preferredMaxLayoutWidth = 380
         let ratingGrid = NSGridView(views: [
-            [NSGridCell.emptyContentView, checkbox("Спрашивать оценку состояния",
-                get: { [unowned self] in self.app.rating.enabled },
-                set: { [unowned self] v in self.app.updateRating { $0.enabled = v } })],
             [label("Частота"), numberRow(RatingSettings.everyRange, prefix: "каждый", unit: "-й показ",
                 get: { [unowned self] in self.app.rating.every },
                 set: { [unowned self] v in self.app.updateRating { $0.every = v } })],
@@ -826,7 +1102,7 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTextViewDelegate {
         ])
 
         let tabs = NSTabView()
-        for (title, view) in [("Фразы", phrasesView), ("Показ", lookView), ("Оценка", ratingView)] {
+        for (title, view) in [("Режимы", modesView), ("Показ", lookView), ("Оценка", ratingView)] {
             let item = NSTabViewItem(identifier: title)
             item.label = title
             item.view = view
@@ -834,23 +1110,102 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTextViewDelegate {
         }
         let showButton = NSButton(title: "Показать фразу", target: nil, action: nil)
         bind(showButton) { [unowned self] in self.app.showNext() }
-        pin([tabs, showButton], in: window.contentView!, buttonRow: true)
+        pin([tabs, showButton], in: window.contentView!)
 
         refresh()
         window.center()
     }
 
-    /// Подтянуть текущее состояние: файл фраз могли поправить снаружи.
+    /// Подтянуть текущее состояние: файлы фраз могли поправить снаружи.
     func refresh() {
-        let current = app.phrasesText()
+        if app.modes.mode(selectedID) == nil { selectedID = BeingMode.defaultID }
+        modeList.reloadData()
+        selectRow()
+        loadSelected()
+    }
+
+    private func selectRow() {
+        if let i = app.modes.modes.firstIndex(where: { $0.id == selectedID }) {
+            modeList.selectRowIndexes([i], byExtendingSelection: false)
+            modeList.scrollRowToVisible(i)
+        }
+    }
+
+    /// Показать выбранный режим в правой части.
+    private func loadSelected() {
+        let m = selected
+        if nameField.stringValue != m.name { nameField.stringValue = m.name }
+        let current = app.phrasesText(m.id)
         if text.string != current { text.string = current }
+        removeButton.isEnabled = !m.isDefault
+        startButton.isHidden = m.isDefault
         syncs.forEach { $0() }
     }
 
-    func textDidChange(_ notification: Notification) { app.savePhrases(text.string) }
+    private func addMode() {
+        selectedID = app.addMode().id
+        modeList.reloadData()
+        selectRow()
+        loadSelected()
+        window.makeFirstResponder(nameField)
+        nameField.currentEditor()?.selectAll(nil)
+    }
+
+    private func confirmRemove() {
+        let m = selected
+        guard !m.isDefault else { return }
+        let alert = NSAlert()
+        alert.messageText = "Удалить режим «\(m.title)» и его фразы?"
+        alert.informativeText = "Фразы режима удалятся вместе с ним, вернуть их не получится."
+        alert.addButton(withTitle: "Удалить").hasDestructiveAction = true
+        alert.addButton(withTitle: "Отмена")
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard let self, response == .alertFirstButtonReturn else { return }
+            let i = self.app.modes.modes.firstIndex { $0.id == m.id } ?? 1
+            self.app.removeMode(m.id)
+            self.selectedID = self.app.modes.modes[max(0, i - 1)].id
+            self.refresh()
+        }
+    }
+
+    // MARK: Список режимов
+
+    func numberOfRows(in tableView: NSTableView) -> Int { app.modes.modes.count }
+
+    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        let m = app.modes.modes[row]
+        let s = NSMutableAttributedString(string: m.title, attributes: [.font: NSFont.systemFont(ofSize: 13)])
+        if m.isDefault {
+            s.append(NSAttributedString(string: " · по умолчанию",
+                                        attributes: [.font: NSFont.systemFont(ofSize: 11),
+                                                     .foregroundColor: NSColor.secondaryLabelColor]))
+        }
+        let label = NSTextField(labelWithAttributedString: s)
+        label.lineBreakMode = .byTruncatingTail
+        return label
+    }
+
+    func tableViewSelectionDidChange(_ notification: Notification) {
+        let row = modeList.selectedRow
+        guard app.modes.modes.indices.contains(row) else { return }
+        guard app.modes.modes[row].id != selectedID else { return }
+        selectedID = app.modes.modes[row].id
+        loadSelected()
+    }
+
+    /// Название сохраняется на каждую букву, как и фразы.
+    func controlTextDidChange(_ obj: Notification) {
+        guard (obj.object as? NSTextField) === nameField else { return }
+        app.updateMode(selectedID) { $0.name = nameField.stringValue }
+        if let i = app.modes.modes.firstIndex(where: { $0.id == selectedID }) {
+            modeList.reloadData(forRowIndexes: [i], columnIndexes: [0])
+        }
+    }
+
+    func textDidChange(_ notification: Notification) { app.savePhrases(text.string, for: selectedID) }
 
     func windowWillClose(_ notification: Notification) {
-        app.savePhrases(text.string)
+        app.savePhrases(text.string, for: selectedID)
         if NSColorPanel.sharedColorPanelExists { NSColorPanel.shared.close() }
     }
 
@@ -943,63 +1298,50 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTextViewDelegate {
         return s
     }
 
-    /// Раскладка: верхний вид растягивается, нижний стоит под ним (кнопка — справа).
-    private func pin(_ views: [NSView], in container: NSView, buttonRow: Bool = false) {
+    /// Раскладка: вкладки растягиваются, кнопка стоит под ними справа.
+    private func pin(_ views: [NSView], in container: NSView) {
         let (top, bottom) = (views[0], views[1])
-        let main = buttonRow ? top : bottom      // во «Фразах» растягивается поле текста
         for v in views { v.translatesAutoresizingMaskIntoConstraints = false; container.addSubview(v) }
-        var c = [
+        NSLayoutConstraint.activate([
             top.topAnchor.constraint(equalTo: container.topAnchor, constant: 12),
-            bottom.topAnchor.constraint(equalTo: top.bottomAnchor, constant: buttonRow ? 10 : 8),
-            main.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 16),
-            main.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -16),
+            top.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 16),
+            top.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -16),
+            bottom.topAnchor.constraint(equalTo: top.bottomAnchor, constant: 10),
+            bottom.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -16),
             bottom.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -14),
-        ]
-        if buttonRow {
-            c.append(bottom.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -16))
-        } else {
-            c.append(top.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 16))
-        }
-        NSLayoutConstraint.activate(c)
+        ])
     }
 }
 
 // MARK: - Приложение
 
-final class AppDelegate: NSObject, NSApplicationDelegate, SPUUpdaterDelegate, SPUStandardUserDriverDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, SPUUpdaterDelegate, SPUStandardUserDriverDelegate {
     private var statusItem: NSStatusItem!
     private var timer: Timer?
+    private var modeEnd: Timer?
     private let bubble = Bubble()
     private var settings: SettingsWindow?
     private var bag: [String] = []
+    private var nextIndex = 0                      // следующая фраза режима «по списку»
+    private var deckMode: String?                  // для какого режима собрана колода
     private var lastShown: String?
     private var pauseItem: NSMenuItem!
     private var loginItem: NSMenuItem!
+    private var modeItem: NSMenuItem!
+    private var menuActions: [Action] = []
     private(set) var look = Look.load()
     private(set) var rating = RatingSettings.load()
     private var ticks = 0
     private var stats: (window: NSWindow, model: StatsModel)?
     private var updater: SPUStandardUpdaterController!
 
-    /// Сколько минут между показами.
-    private(set) var intervalMinutes: Int {
-        get {
-            let v = UserDefaults.standard.integer(forKey: "intervalMinutes")
-            return intervalRange.contains(v) ? v : defaultIntervalMinutes
-        }
-        set { UserDefaults.standard.set(newValue, forKey: "intervalMinutes") }
-    }
-
-    private lazy var phrasesURL: URL = {
+    private lazy var dataDir: URL = {
         let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Nudge", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let url = dir.appendingPathComponent("phrases.txt")
-        if !FileManager.default.fileExists(atPath: url.path) {
-            try? defaultPhrases.write(to: url, atomically: true, encoding: .utf8)
-        }
-        return url
+        return dir
     }()
+    private(set) lazy var modes = ModeStore(dir: dataDir)
 
     func applicationDidFinishLaunching(_ note: Notification) {
         updater = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: self, userDriverDelegate: self)
@@ -1012,10 +1354,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, SPUUpdaterDelegate, SP
         statusItem.button?.setAccessibilityLabel("График жизни")
 
         let menu = NSMenu()
+        menu.delegate = self
         menu.addItem(withTitle: "Показать сейчас", action: #selector(showNow), keyEquivalent: "")
         menu.addItem(withTitle: "Оценить состояние", action: #selector(rateNow), keyEquivalent: "")
         menu.addItem(withTitle: "Статистика…", action: #selector(openStats), keyEquivalent: "")
         menu.addItem(.separator())
+        modeItem = menu.addItem(withTitle: "Режим", action: nil, keyEquivalent: "")
+        modeItem.submenu = NSMenu()
         menu.addItem(withTitle: "Настройки…", action: #selector(openSettings), keyEquivalent: ",")
         menu.addItem(.separator())
         pauseItem = menu.addItem(withTitle: "Пауза", action: #selector(togglePause), keyEquivalent: "")
@@ -1035,6 +1380,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, SPUUpdaterDelegate, SP
         bubble.onRate = { [weak self] in self?.recordRating($0, at: $1, comment: $2) }
         installMainMenu()
         startTimer()
+        scheduleModeEnd()                              // режим, включённый до перезапуска, продолжается
         warnIfTranslocated()
     }
 
@@ -1092,27 +1438,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, SPUUpdaterDelegate, SP
 
     // MARK: Таймер
 
+    /// Запускает показы с интервалом текущего режима. Заодно снимает паузу.
     private func startTimer() {
         timer?.invalidate()
-        let t = Timer(timeInterval: TimeInterval(intervalMinutes * 60), repeats: true) { [weak self] _ in
+        let t = Timer(timeInterval: TimeInterval(modes.current.intervalMinutes * 60), repeats: true) { [weak self] _ in
             self?.tick()
         }
         t.tolerance = 5
         RunLoop.main.add(t, forMode: .common)
         timer = t
+        pauseItem.title = "Пауза"
     }
 
-    /// Сохраняет интервал и сразу перезапускает отсчёт, если не на паузе.
-    func applyInterval(_ minutes: Int) {
-        guard minutes != intervalMinutes else { return }
-        intervalMinutes = minutes
-        if timer != nil { startTimer() }
-    }
+    private var isPaused: Bool { timer == nil }
 
     @objc private func togglePause() {
-        if timer == nil {
+        if isPaused {
             startTimer()
-            pauseItem.title = "Пауза"
         } else {
             timer?.invalidate()
             timer = nil
@@ -1120,30 +1462,131 @@ final class AppDelegate: NSObject, NSApplicationDelegate, SPUUpdaterDelegate, SP
         }
     }
 
-    // MARK: Фразы
+    // MARK: Режимы
 
-    func phrasesText() -> String {
-        (try? String(contentsOf: phrasesURL, encoding: .utf8)) ?? ""
+    /// Включает режим на заданное число минут (nil — пока не выключат) и сразу показывает первую фразу.
+    func startMode(_ id: String, minutes: Int?) {
+        guard let mode = modes.mode(id), !mode.isDefault else { return }
+        modes.setActive(ActiveMode(id: id, until: minutes.map { Date().addingTimeInterval(TimeInterval($0 * 60)) }))
+        scheduleModeEnd()
+        startTimer()
+        showNext()
     }
 
-    func savePhrases(_ text: String) {
+    @objc func stopMode() {
+        modes.setActive(nil)
+        modeChanged()
+    }
+
+    /// Режим сменился сам или его выключили: таймер берёт интервал нового режима.
+    private func modeChanged() {
+        scheduleModeEnd()
+        if !isPaused { startTimer() }
+    }
+
+    private func scheduleModeEnd() {
+        modeEnd?.invalidate()
+        modeEnd = nil
+        guard let until = modes.active?.until else { return }
+        let t = Timer(fire: until, interval: 0, repeats: false) { [weak self] _ in
+            guard let self, self.modes.dropExpired() else { return }
+            self.modeChanged()
+        }
+        RunLoop.main.add(t, forMode: .common)
+        modeEnd = t
+    }
+
+    func updateMode(_ id: String, _ change: (inout BeingMode) -> Void) {
+        let before = modes.mode(id)?.intervalMinutes
+        modes.update(id, change)
+        if id == modes.current.id, before != modes.current.intervalMinutes, !isPaused { startTimer() }
+    }
+
+    func addMode() -> BeingMode { modes.add() }
+
+    func removeMode(_ id: String) {
+        let wasActive = modes.active?.id == id
+        modes.remove(id)
+        if wasActive { modeChanged() }
+    }
+
+    private static let clock: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm"
+        return f
+    }()
+
+    /// Подменю «Режим» собирается заново при каждом открытии: в нём время до конца режима.
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        guard menu == statusItem.menu, let sub = modeItem.submenu else { return }
+        if modes.dropExpired() { modeChanged() }
+        sub.removeAllItems()
+        menuActions = []
+        func add(_ title: String, to m: NSMenu, _ run: (() -> Void)?) -> NSMenuItem {
+            let item = m.addItem(withTitle: title, action: nil, keyEquivalent: "")
+            if let run {
+                let a = Action(run)
+                menuActions.append(a)
+                item.target = a
+                item.action = #selector(Action.fire)
+            }
+            return item
+        }
+
+        if let a = modes.active, let m = modes.mode(a.id) {
+            modeItem.title = "Режим: " + m.title + (a.until.map { " · до " + AppDelegate.clock.string(from: $0) } ?? "")
+            _ = add("Выключить режим", to: sub) { [weak self] in self?.stopMode() }
+            sub.addItem(.separator())
+        } else {
+            modeItem.title = "Режим"
+        }
+        let others = modes.modes.filter { !$0.isDefault }
+        if others.isEmpty {
+            _ = add("Режимов пока нет", to: sub, nil)
+        }
+        for m in others {
+            let item = add(m.title, to: sub, nil)
+            item.state = modes.active?.id == m.id ? .on : .off
+            let durations = NSMenu()
+            for d in modeDurations {
+                _ = add(d.title, to: durations) { [weak self] in self?.startMode(m.id, minutes: d.minutes) }
+            }
+            item.submenu = durations
+        }
+        sub.addItem(.separator())
+        _ = add("Настроить режимы…", to: sub) { [weak self] in self?.openSettings() }
+    }
+
+    // MARK: Фразы
+
+    func phrasesText(_ id: String) -> String { modes.phrasesText(id) }
+
+    func savePhrases(_ text: String, for id: String) {
         do {
-            try text.write(to: phrasesURL, atomically: true, encoding: .utf8)
+            try modes.savePhrases(text, id)
         } catch {
             NSSound.beep()
             NSLog("График жизни: не удалось сохранить фразы: \(error)")
         }
     }
 
-    private func loadPhrases() -> [String] {
-        phrasesText().split(whereSeparator: \.isNewline)
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty && !$0.hasPrefix("#") }
-    }
-
-    /// Перемешанная колода: каждая фраза выпадает один раз за круг.
+    /// Фраза текущего режима: по списку по кругу или из перемешанной колоды,
+    /// где каждая фраза выпадает один раз за круг.
     private func nextPhrase() -> String? {
-        let all = loadPhrases()
+        let mode = modes.current
+        let all = modes.phrases(mode.id)
+        if deckMode != mode.id {
+            deckMode = mode.id
+            bag = []
+            nextIndex = 0
+        }
+        if mode.ordered {
+            guard !all.isEmpty else { return nil }
+            if nextIndex >= all.count { nextIndex = 0 }
+            lastShown = all[nextIndex]
+            nextIndex += 1
+            return lastShown
+        }
         bag.removeAll { !all.contains($0) }        // учесть удалённые строки
         if bag.isEmpty {
             bag = all.shuffled()
@@ -1155,10 +1598,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, SPUUpdaterDelegate, SP
 
     // MARK: Показ
 
-    /// Срабатывание таймера: обычно фраза, каждый N-й раз — оценка состояния.
+    /// Срабатывание таймера: обычно фраза, каждый N-й раз — оценка состояния, если режим её просит.
     private func tick() {
+        if modes.dropExpired() { modeChanged() }
         ticks += 1
-        if rating.enabled, ticks % rating.every == 0 {
+        if modes.current.askRating, ticks % rating.every == 0 {
             showRating()
         } else {
             showNext()
@@ -1170,12 +1614,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, SPUUpdaterDelegate, SP
 
     func showNext() {
         guard let phrase = nextPhrase() else { return }
-        bubble.show(.phrase(phrase), look: look, animated: true)
+        bubble.show(.phrase(phrase), look: look, seconds: modes.current.seconds, animated: true)
     }
 
     func showRating() {
         let prompt = rating.prompt.trimmingCharacters(in: .whitespacesAndNewlines)
-        bubble.show(.rating(prompt.isEmpty ? RatingSettings.defaultPrompt : prompt), look: look, animated: true)
+        bubble.show(.rating(prompt.isEmpty ? RatingSettings.defaultPrompt : prompt), look: look,
+                    seconds: modes.current.seconds, animated: true)
     }
 
     func updateRating(_ change: (inout RatingSettings) -> Void) {
@@ -1185,33 +1630,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, SPUUpdaterDelegate, SP
 
     // MARK: Журнал оценок
 
-    private lazy var ratingsURL = phrasesURL.deletingLastPathComponent().appendingPathComponent("ratings.csv")
+    private lazy var ratingsURL = dataDir.appendingPathComponent("ratings.csv")
 
-    private static let logHeader = "Дата,Оценка из 10,Комментарий"
+    private static let logHeader = "Дата,Оценка из 10,Комментарий,Режим"
 
     private func ensureRatingsLog() throws {
         guard FileManager.default.fileExists(atPath: ratingsURL.path) else {
             try (AppDelegate.logHeader + "\n").write(to: ratingsURL, atomically: true, encoding: .utf8)
             return
         }
-        // Журналы до появления комментариев: дописать название третьего столбца.
+        // Журналы из прошлых версий: дописать в заголовок новые столбцы. Строки не трогаем,
+        // у старых оценок режима нет, они считаются оценками обычного режима.
         let text = try String(contentsOf: ratingsURL, encoding: .utf8)
-        if text.hasPrefix("Дата,Оценка из 10\n") {
-            try (AppDelegate.logHeader + text.dropFirst("Дата,Оценка из 10".count))
+        let header = text.prefix { !$0.isNewline }
+        if header.hasPrefix("Дата,"), header != AppDelegate.logHeader {
+            try (AppDelegate.logHeader + text.dropFirst(header.count))
                 .write(to: ratingsURL, atomically: true, encoding: .utf8)
         }
+    }
+
+    /// Поле CSV в кавычках, в одну строку.
+    private static func csvField(_ s: String) -> String {
+        "\"" + s.replacingOccurrences(of: "\n", with: " ").replacingOccurrences(of: "\"", with: "\"\"") + "\""
     }
 
     private func recordRating(_ points: Int, at date: Date, comment: String?) {
         let f = DateFormatter()
         f.locale = Locale(identifier: "en_US_POSIX")
         f.dateFormat = "yyyy-MM-dd HH:mm"
-        var line = "\(f.string(from: date)),\(points)"
-        if let c = comment {
-            let clean = c.replacingOccurrences(of: "\n", with: " ").replacingOccurrences(of: "\"", with: "\"\"")
-            line += ",\"\(clean)\""
-        }
-        line += "\n"
+        let line = "\(f.string(from: date)),\(points),\(comment.map(AppDelegate.csvField) ?? ""),"
+            + AppDelegate.csvField(modes.current.title) + "\n"
         do {
             try ensureRatingsLog()
             let h = try FileHandle(forWritingTo: ratingsURL)
@@ -1227,7 +1675,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, SPUUpdaterDelegate, SP
 
     @objc func openStats() {
         if stats == nil {
-            let model = StatsModel(url: ratingsURL)
+            let model = StatsModel(url: ratingsURL) { [weak self] in self?.modes.modes[0].title ?? "Обычный" }
             let view = StatsView(model: model, onOpenCSV: { [weak self] in self?.openRatingsLog() })
             let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: 460),
                              styleMask: [.titled, .closable, .resizable, .miniaturizable],
@@ -1253,8 +1701,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, SPUUpdaterDelegate, SP
         change(&look)
         look.save()
         guard !bubble.restyle(look) else { return }
-        let sample = lastShown ?? loadPhrases().first ?? "Так будет выглядеть фраза"
-        bubble.show(.phrase(sample), look: look, animated: false)
+        let sample = lastShown ?? modes.phrases(modes.current.id).first ?? "Так будет выглядеть фраза"
+        bubble.show(.phrase(sample), look: look, seconds: modes.current.seconds, animated: false)
     }
 
     /// Короткая сводка: что это за приложение и зачем оно.
@@ -1266,6 +1714,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, SPUUpdaterDelegate, SP
         Помогает замечать, как на самом деле проходит день.
 
         Раз в несколько минут поверх всех окон появляется фраза или вопрос из вашего списка, чтобы вернуть внимание к важному.
+
+        Режимы бытия — свои наборы фраз для особых отрезков времени: занятия, продажи, встречи. Включаются из меню на нужное время, потом приложение само возвращается к обычным фразам.
 
         Иногда приложение просит оценить состояние звёздами от 1 до 10 и коротко написать почему. Из оценок складывается график: видно, когда вам хорошо, когда плохо и что на это влияет.
 
